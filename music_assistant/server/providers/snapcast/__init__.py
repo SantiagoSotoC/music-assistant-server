@@ -65,21 +65,20 @@ async def get_config_entries(
 
 class SnapCastProvider(PlayerProvider):
     """Player provider for Snapcast based players"""
+
     _snapserver: [asyncio.Server | asyncio.BaseTransport]
 
     async def handle_setup(self) -> None:
         try:
-            self._snapserver = await snapcast.control.create_server(self.mass.loop, 'localhost', reconnect=True)
-            #
-            self._snapserver.set_on_update_callback(
-                self._handle_update)
-            self._handle_update()
-            self.logger.info(
-                "Started Snapserver connexion on port")
-        except OSError:
-            raise SetupFailedError(
-                f"Unable to start the Snapserver connexion ?"
+            self._snapserver = await snapcast.control.create_server(
+                self.mass.loop, "localhost", reconnect=True
             )
+            #
+            self._snapserver.set_on_update_callback(self._handle_update)
+            self._handle_update()
+            self.logger.info("Started Snapserver connexion on port")
+        except OSError:
+            raise SetupFailedError(f"Unable to start the Snapserver connexion ?")
 
     def _handle_update(self):
         for client in self._snapserver.clients:
@@ -101,8 +100,8 @@ class SnapCastProvider(PlayerProvider):
                 supported_features=(
                     PlayerFeature.SYNC,
                     PlayerFeature.VOLUME_SET,
-                    PlayerFeature.VOLUME_MUTE
-                )
+                    PlayerFeature.VOLUME_MUTE,
+                ),
             )
         # update player state on player events
         player.name = client.friendly_name
@@ -119,16 +118,18 @@ class SnapCastProvider(PlayerProvider):
         self._snapserver.stop()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        self.mass.create_task(self._snapserver.client_volume(
-            player_id, {'percent': volume_level, 'muted': False}))
+        self.mass.create_task(
+            self._snapserver.client_volume(player_id, {"percent": volume_level, "muted": False})
+        )
 
-    async def cmd_play_url(self, player_id: str, url: str, queue_item: QueueItem | None,) -> None:
-
-        server = self._snapserver
-        stream_id = server.streams[0].identifier
-        stream: Snapstream = server.stream(stream_id)
+    async def cmd_play_url(
+        self,
+        player_id: str,
+        url: str,
+        queue_item: QueueItem | None,
+    ) -> None:
+        stream = self._get_client_stream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
-        stream_fifo_id = self._get_client_group(player_id).stream
         if hasattr(stream, "ffmpeg"):
             try:
                 print("Cancel Stream")
@@ -136,11 +137,12 @@ class SnapCastProvider(PlayerProvider):
             except:
                 pass
 
-        ffmpeg = (FFmpeg()
-                  .option("y")
-                  .input(url)
-                  .output(f"/tmp/{stream_fifo_id}", f='s16le', acodec='pcm_s16le', ac=2, ar=48000)
-                  )
+        ffmpeg = (
+            FFmpeg()
+            .option("y")
+            .input(url)
+            .output(f"{stream.path}", f="s16le", acodec="pcm_s16le", ac=2, ar=48000)
+        )
         self.mass.create_task(ffmpeg.execute())
 
         @ffmpeg.on("start")
@@ -158,13 +160,13 @@ class SnapCastProvider(PlayerProvider):
             player.current_url = url
             self.mass.players.register_or_update(player)
 
-        @ ffmpeg.on("completed")
+        @ffmpeg.on("completed")
         def on_completed():
             player.current_url = ""
             player.state = PlayerState.IDLE
             self.mass.players.register_or_update(player)
 
-        @ ffmpeg.on("terminated")
+        @ffmpeg.on("terminated")
         def on_terminated():
             player.current_url = ""
             player.state = PlayerState.IDLE
@@ -173,7 +175,7 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_pause(self, player_id: str) -> None:
         try:
             print("Cancel Stream")
-            self._snapserver.streams[0].ffmpeg.terminate()
+            self._get_client_stream(player_id).ffmpeg.terminate()
             player = self.mass.players.get(player_id, raise_unavailable=False)
             player.state = PlayerState.PAUSED
             self.mass.players.register_or_update(player)
@@ -229,3 +231,7 @@ class SnapCastProvider(PlayerProvider):
     def _get_client_group(self, player_id):
         client = self._snapserver.client(player_id)
         return client.group
+
+    def _get_client_stream(self, player_id):
+        group = self._get_client_group(player_id)
+        return self._snapserver.stream(group.stream)
