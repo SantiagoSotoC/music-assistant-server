@@ -185,13 +185,13 @@ class SnapCastProvider(PlayerProvider):
             pass
 
     async def cmd_volume_mute(self, player_id, muted):
-        self._snapserver.client(player_id).set_muted(muted)
+        self.mass.create_task(self._snapserver.client(player_id).set_muted(muted))
 
     async def _add_stream(self, streamUri):
-        return await self._snapserver.stream_add_stream(streamUri)
+        self.mass.create_task(self._snapserver.stream_add_stream(streamUri))
 
     async def _remove_stream(self, stream_id):
-        self._server.stream_remove_stream(stream_id)
+        self.mass.create_task(self._server.stream_remove_stream(stream_id))
 
     def _snapclient_get_group_clients_identifiers(self, identifier):
         group = self._get_client_group(player_id)
@@ -208,7 +208,7 @@ class SnapCastProvider(PlayerProvider):
         child_player.synced_to = parent_player.player_id
 
         group = self._get_client_group(target_player)
-        await group.add_client(player_id)
+        self.mass.create_task(group.add_client(player_id))
 
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
