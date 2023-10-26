@@ -33,8 +33,8 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.controllers.streams import MultiClientStreamJob
 
-
-PLAYER_CONFIG_ENTRIES = ()
+SNAPCAST_SERVER_HOST = "localhost"
+SNAPCAST_SERVER_CONTROL_PORT = 1705
 
 
 async def setup(
@@ -71,12 +71,13 @@ class SnapCastProvider(PlayerProvider):
     async def handle_setup(self) -> None:
         try:
             self._snapserver = await snapcast.control.create_server(
-                self.mass.loop, "localhost", reconnect=True
+                self.mass.loop, SNAPCAST_SERVER_HOST, SNAPCAST_SERVER_CONTROL_PORT, True
             )
-            #
             self._snapserver.set_on_update_callback(self._handle_update)
             self._handle_update()
-            self.logger.info("Started Snapserver connexion on port")
+            self.logger.info(
+                f"Started Snapserver connection {SNAPCAST_SERVER_HOST}:{SNAPCAST_SERVER_CONTROL_PORT}"
+            )
         except OSError:
             raise SetupFailedError(f"Unable to start the Snapserver connexion ?")
 
@@ -103,6 +104,7 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                 ),
             )
+        self.mass.players.register_or_update(player)
         # update player state on player events
         player.name = client.friendly_name
         player.volume_level = client.volume
@@ -111,7 +113,7 @@ class SnapCastProvider(PlayerProvider):
         player.can_sync_with = tuple(
             x.identifier for x in self._snapserver.clients if x.identifier != player_id
         )
-
+        player.synced_to = self._synced_to(player_id)
         self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
@@ -235,3 +237,16 @@ class SnapCastProvider(PlayerProvider):
     def _get_client_stream(self, player_id):
         group = self._get_client_group(player_id)
         return self._snapserver.stream(group.stream)
+
+    def _synced_to(self, player_id):
+        ret = None
+        group = self._get_client_group(player_id)
+        clients = list(filter(lambda x: x != player_id, group.clients))
+        if player_id == group.clients[0]:  # Is player is Sync group
+            player = self.mass.players.get(player_id)
+            for client in clients:
+                player.group_childs.add(client)
+        else:
+            if len(clients) > 0:
+                ret = clients[0]
+        return ret
