@@ -244,6 +244,7 @@ class SnapCastProvider(PlayerProvider):
         clients = list(filter(lambda x: x != player_id, group.clients))
         if player_id == group.clients[0]:  # Is player is Sync group
             player = self.mass.players.get(player_id)
+            player.group_childs.clear()
             for client in clients:
                 player.group_childs.add(client)
         else:
