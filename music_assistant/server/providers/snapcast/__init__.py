@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 
 import snapcast.control
-from snapcast.control.stream import Snapstream
 from typing import TYPE_CHECKING
 from contextlib import suppress
-
 
 from ffmpeg.asyncio import FFmpeg
 from ffmpeg import Progress
@@ -33,7 +31,7 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.controllers.streams import MultiClientStreamJob
 
-SNAPCAST_SERVER_HOST = "localhost"
+SNAPCAST_SERVER_HOST = "127.0.0.1"
 SNAPCAST_SERVER_CONTROL_PORT = 1705
 
 
@@ -71,7 +69,10 @@ class SnapCastProvider(PlayerProvider):
     async def handle_setup(self) -> None:
         try:
             self._snapserver = await snapcast.control.create_server(
-                self.mass.loop, SNAPCAST_SERVER_HOST, SNAPCAST_SERVER_CONTROL_PORT, True
+                self.mass.loop,
+                SNAPCAST_SERVER_HOST,
+                port=SNAPCAST_SERVER_CONTROL_PORT,
+                reconnect=True,
             )
             self._snapserver.set_on_update_callback(self._handle_update)
             self._handle_update()
@@ -79,7 +80,7 @@ class SnapCastProvider(PlayerProvider):
                 f"Started Snapserver connection {SNAPCAST_SERVER_HOST}:{SNAPCAST_SERVER_CONTROL_PORT}"
             )
         except OSError:
-            raise SetupFailedError(f"Unable to start the Snapserver connexion ?")
+            raise SetupFailedError(f"Unable to start the Snapserver connection ?")
 
     def _handle_update(self):
         for client in self._snapserver.clients:
@@ -187,9 +188,6 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_volume_mute(self, player_id, muted):
         self.mass.create_task(self._snapserver.client(player_id).set_muted(muted))
 
-    async def _add_stream(self, streamUri):
-        self.mass.create_task(self._snapserver.stream_add_stream(streamUri))
-
     async def _remove_stream(self, stream_id):
         self.mass.create_task(self._server.stream_remove_stream(stream_id))
 
@@ -217,18 +215,10 @@ class SnapCastProvider(PlayerProvider):
         group = self._get_client_group(player_id)
         await group.remove_client(player_id)
         group = self._get_client_group(player_id)
-        await self._add_stream(f"pipe:///tmp/{group.identifier}?name={group.identifier}")
-        await group.set_stream(f"{group.identifier}")
-        child_player = self.mass.players.get(player_id)
-        parent_player = self.mass.players.get(child_player.synced_to)
-        child_player.synced_to = None
-        with suppress(KeyError):
-            parent_player.group_childs.remove(child_player.player_id)
-        if parent_player.group_childs == {parent_player.player_id}:
-            # last child vanished; the sync group is dissolved
-            parent_player.group_childs.remove(parent_player.player_id)
-        self.mass.players.update(child_player.player_id)
-        self.mass.players.update(parent_player.player_id)
+        stream = await self._snapserver.stream_add_stream(
+            f"pipe:///tmp/music-assistant/{group.identifier}?name={group.identifier}"
+        )
+        await group.set_stream(stream.get("id"))
 
     def _get_client_group(self, player_id):
         client = self._snapserver.client(player_id)
