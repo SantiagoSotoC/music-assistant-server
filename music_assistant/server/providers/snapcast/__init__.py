@@ -1,35 +1,25 @@
+"""Snapcast Player provider for Music Assistant."""
 from __future__ import annotations
 
 import asyncio
+import time
+from typing import TYPE_CHECKING
 
 import snapcast.control
-from typing import TYPE_CHECKING
-from contextlib import suppress
-
+from ffmpeg import FFmpegError, Progress
 from ffmpeg.asyncio import FFmpeg
-from ffmpeg import Progress
-import time
 
-from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_OUTPUT_CODEC,
-    ConfigEntry,
-    ConfigValueType,
-)
-from music_assistant.common.models.enums import PlayerFeature, PlayerType, PlayerState
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import SetupFailedError
-
-from music_assistant.constants import CONF_LOG_LEVEL, CONF_PLAYERS
-from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
-
+from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
 
 SNAPCAST_SERVER_HOST = "127.0.0.1"
 SNAPCAST_SERVER_CONTROL_PORT = 1705
@@ -62,11 +52,12 @@ async def get_config_entries(
 
 
 class SnapCastProvider(PlayerProvider):
-    """Player provider for Snapcast based players"""
+    """Player provider for Snapcast based players."""
 
     _snapserver: [asyncio.Server | asyncio.BaseTransport]
 
     async def handle_setup(self) -> None:
+        """Handle async initialization of the provider."""
         try:
             self._snapserver = await snapcast.control.create_server(
                 self.mass.loop,
@@ -77,10 +68,11 @@ class SnapCastProvider(PlayerProvider):
             self._snapserver.set_on_update_callback(self._handle_update)
             self._handle_update()
             self.logger.info(
-                f"Started Snapserver connection {SNAPCAST_SERVER_HOST}:{SNAPCAST_SERVER_CONTROL_PORT}"
+                f"Started Snapserver connection on:"
+                f"{SNAPCAST_SERVER_HOST}:{SNAPCAST_SERVER_CONTROL_PORT}"
             )
         except OSError:
-            raise SetupFailedError(f"Unable to start the Snapserver connection ?")
+            raise SetupFailedError("Unable to start the Snapserver connection ?")
 
     def _handle_update(self):
         for client in self._snapserver.clients:
@@ -118,9 +110,11 @@ class SnapCastProvider(PlayerProvider):
         self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
+        """Handle close/cleanup of the provider."""
         self._snapserver.stop()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+        """Send VOLUME_SET command to given player."""
         self.mass.create_task(
             self._snapserver.client_volume(player_id, {"percent": volume_level, "muted": False})
         )
@@ -129,15 +123,24 @@ class SnapCastProvider(PlayerProvider):
         self,
         player_id: str,
         url: str,
-        queue_item: QueueItem | None,
     ) -> None:
+        """Send PLAY URL command to given player.
+
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
+
+            - player_id: player_id of the player to handle the command.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+        """
         stream = self._get_client_stream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if hasattr(stream, "ffmpeg"):
             try:
                 print("Cancel Stream")
                 stream.ffmpeg.terminate()
-            except:
+            except FFmpegError:
                 pass
 
         ffmpeg = (
@@ -176,26 +179,29 @@ class SnapCastProvider(PlayerProvider):
             self.mass.players.register_or_update(player)
 
     async def cmd_pause(self, player_id: str) -> None:
+        """Send PAUSE command to given player."""
         try:
             print("Cancel Stream")
             self._get_client_stream(player_id).ffmpeg.terminate()
             player = self.mass.players.get(player_id, raise_unavailable=False)
             player.state = PlayerState.PAUSED
             self.mass.players.register_or_update(player)
-        except:
+        except FFmpegError:
             pass
 
     async def cmd_volume_mute(self, player_id, muted):
+        """Send MUTE command to given player."""
         self.mass.create_task(self._snapserver.client(player_id).set_muted(muted))
 
     async def _remove_stream(self, stream_id):
         self.mass.create_task(self._server.stream_remove_stream(stream_id))
 
-    def _snapclient_get_group_clients_identifiers(self, identifier):
+    def _snapclient_get_group_clients_identifiers(self, player_id):
         group = self._get_client_group(player_id)
-        return [ele for ele in group.clients if ele != identifier]
+        return [ele for ele in group.clients if ele != player_id]
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
+        """Sync Snapcast player."""
         child_player = self.mass.players.get(player_id)
         assert child_player  # guard
         parent_player = self.mass.players.get(target_player)
@@ -212,6 +218,7 @@ class SnapCastProvider(PlayerProvider):
         self.mass.players.update(parent_player.player_id)
 
     async def cmd_unsync(self, player_id: str) -> None:
+        """Unsync Snapcast player."""
         group = self._get_client_group(player_id)
         await group.remove_client(player_id)
         group = self._get_client_group(player_id)
@@ -237,7 +244,6 @@ class SnapCastProvider(PlayerProvider):
             player.group_childs.clear()
             for client in clients:
                 player.group_childs.add(client)
-        else:
-            if len(clients) > 0:
-                ret = clients[0]
+        elif len(clients) > 0:
+            ret = clients[0]
         return ret
