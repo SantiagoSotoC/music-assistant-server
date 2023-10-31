@@ -13,6 +13,7 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -123,6 +124,7 @@ class SnapCastProvider(PlayerProvider):
         self,
         player_id: str,
         url: str,
+        queue_item: QueueItem | None,
     ) -> None:
         """Send PLAY URL command to given player.
 
@@ -138,22 +140,22 @@ class SnapCastProvider(PlayerProvider):
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if hasattr(stream, "ffmpeg"):
             try:
-                print("Cancel Stream")
                 stream.ffmpeg.terminate()
+                self.logger.debug("Terminate ffmpeg stream")
             except FFmpegError:
-                pass
+                self.logger.debug("Fail to terminate ffmpeg stream")
 
         ffmpeg = (
             FFmpeg()
             .option("y")
             .input(url)
-            .output(f"{stream.path}", f="s16le", acodec="pcm_s16le", ac=2, ar=48000)
+            .output(f"{stream.path}", f="u16le", acodec="pcm_s16le", ac=2, ar=48000)
         )
         self.mass.create_task(ffmpeg.execute())
 
         @ffmpeg.on("start")
         def on_start(arguments: list[str]):
-            print("start Stream")
+            self.logger.debug(f"Ffmpeg stream is running: " f"{queue_item.name}")
             stream.ffmpeg = ffmpeg
             player.state = PlayerState.PLAYING
             player.current_url = url
