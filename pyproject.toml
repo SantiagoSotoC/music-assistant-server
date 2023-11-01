@@ -46,12 +46,12 @@ server = [
   "zeroconf==0.119.0",
   "cryptography==41.0.4",
   "ifaddr==0.2.0",
-  "uvloop==0.17.0"
+  "uvloop==0.19.0"
 ]
 test = [
   "black==23.7.0",
   "codespell==2.2.5",
-  "mypy==1.5.1",
+  "mypy==1.6.1",
   "ruff==0.1.1",
   "pytest==7.4.3",
   "pytest-asyncio==0.21.1",
