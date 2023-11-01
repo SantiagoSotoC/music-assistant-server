@@ -164,30 +164,29 @@ class SnapCastProvider(PlayerProvider):
         @ffmpeg.on("progress")
         def on_progress(progress: Progress):
             player.state = PlayerState.PLAYING
-            player.current_url = url
             self.mass.players.register_or_update(player)
 
         @ffmpeg.on("completed")
         async def on_completed():
-            await self.cmd_stop(player_id)
+            player.state = PlayerState.IDLE
+            self.mass.players.register_or_update(player)
 
         @ffmpeg.on("terminated")
         async def on_terminated():
-            await self.cmd_stop(player_id)
+            player.state = PlayerState.IDLE
+            self.mass.players.register_or_update(player)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        stream = self._get_client_stream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
-        if hasattr(stream, "ffmpeg"):
-            try:
-                stream.ffmpeg.terminate()
-                self.logger.debug("ffmpeg player stopped")
-            except FFmpegError:
-                self.logger.debug("Fail to stop ffmpeg player")
-        player.current_url = ""
-        player.state = PlayerState.IDLE
-        self.mass.players.update(player_id)
+        if player.state != PlayerState.IDLE:
+            stream = self._get_client_stream(player_id)
+            if hasattr(stream, "ffmpeg"):
+                try:
+                    stream.ffmpeg.terminate()
+                    self.logger.debug("ffmpeg player stopped")
+                except FFmpegError:
+                    self.logger.debug("Fail to stop ffmpeg player")
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
