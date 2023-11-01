@@ -112,6 +112,8 @@ class SnapCastProvider(PlayerProvider):
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
+        for client in self._snapserver.clients:
+            await self.cmd_stop(client.identifier)
         self._snapserver.stop()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
@@ -124,7 +126,7 @@ class SnapCastProvider(PlayerProvider):
         self,
         player_id: str,
         url: str,
-        queue_item: QueueItem | None,
+        queue_item: QueueItem | None,  # noqa: ARG002
     ) -> None:
         """Send PLAY URL command to given player.
 
@@ -136,15 +138,11 @@ class SnapCastProvider(PlayerProvider):
             - url: the url that the player should start playing.
             - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
+        await self.cmd_stop(player_id)
+
         stream = self._get_client_stream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
-        if hasattr(stream, "ffmpeg"):
-            try:
-                stream.ffmpeg.terminate()
-                self.logger.debug("Terminate ffmpeg stream")
-            except FFmpegError:
-                self.logger.debug("Fail to terminate ffmpeg stream")
-
+        player.state = PlayerState.PLAYING
         ffmpeg = (
             FFmpeg()
             .option("y")
@@ -155,10 +153,11 @@ class SnapCastProvider(PlayerProvider):
 
         @ffmpeg.on("start")
         def on_start(arguments: list[str]):
-            self.logger.debug(f"Ffmpeg stream is running: " f"{queue_item.name}")
+            self.logger.debug("Ffmpeg stream is running")
             stream.ffmpeg = ffmpeg
             player.state = PlayerState.PLAYING
             player.current_url = url
+            player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
             self.mass.players.register_or_update(player)
 
@@ -169,27 +168,30 @@ class SnapCastProvider(PlayerProvider):
             self.mass.players.register_or_update(player)
 
         @ffmpeg.on("completed")
-        def on_completed():
-            player.current_url = ""
-            player.state = PlayerState.IDLE
-            self.mass.players.register_or_update(player)
+        async def on_completed():
+            await self.cmd_stop(player_id)
 
         @ffmpeg.on("terminated")
-        def on_terminated():
-            player.current_url = ""
-            player.state = PlayerState.IDLE
-            self.mass.players.register_or_update(player)
+        async def on_terminated():
+            await self.cmd_stop(player_id)
+
+    async def cmd_stop(self, player_id: str) -> None:
+        """Send STOP command to given player."""
+        stream = self._get_client_stream(player_id)
+        player = self.mass.players.get(player_id, raise_unavailable=False)
+        if hasattr(stream, "ffmpeg"):
+            try:
+                stream.ffmpeg.terminate()
+                self.logger.debug("ffmpeg player stopped")
+            except FFmpegError:
+                self.logger.debug("Fail to stop ffmpeg player")
+        player.current_url = ""
+        player.state = PlayerState.IDLE
+        self.mass.players.update(player_id)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
-        try:
-            print("Cancel Stream")
-            self._get_client_stream(player_id).ffmpeg.terminate()
-            player = self.mass.players.get(player_id, raise_unavailable=False)
-            player.state = PlayerState.PAUSED
-            self.mass.players.register_or_update(player)
-        except FFmpegError:
-            pass
+        await self.cmd_stop(player_id)
 
     async def cmd_volume_mute(self, player_id, muted):
         """Send MUTE command to given player."""
@@ -241,7 +243,7 @@ class SnapCastProvider(PlayerProvider):
         ret = None
         group = self._get_client_group(player_id)
         clients = list(filter(lambda x: x != player_id, group.clients))
-        if player_id == group.clients[0]:  # Is player is Sync group
+        if player_id == group.clients[0]:  # Player is a Sync group master
             player = self.mass.players.get(player_id)
             player.group_childs.clear()
             for client in clients:
