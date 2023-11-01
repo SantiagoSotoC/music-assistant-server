@@ -142,7 +142,7 @@ class SnapCastProvider(PlayerProvider):
 
         stream = self._get_client_stream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
-        player.state = PlayerState.PLAYING
+
         ffmpeg = (
             FFmpeg()
             .option("y")
