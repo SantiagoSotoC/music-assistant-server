@@ -76,21 +76,21 @@ class SnapCastProvider(PlayerProvider):
             raise SetupFailedError("Unable to start the Snapserver connection ?")
 
     def _handle_update(self):
-        for client in self._snapserver.clients:
-            self._handle_player_update(client)
-            client.set_callback(self._handle_player_update)
+        for snap_client in self._snapserver.clients:
+            self._handle_player_update(snap_client)
+            snap_client.set_callback(self._handle_player_update)
 
-    def _handle_player_update(self, client):
-        player_id = client.identifier
+    def _handle_player_update(self, snap_client):
+        player_id = snap_client.identifier
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
             player = Player(
                 player_id=player_id,
                 provider=self.domain,
                 type=PlayerType.PLAYER,
-                name=client.friendly_name,
+                name=snap_client.friendly_name,
                 available=True,
-                powered=client.connected,
+                powered=snap_client.connected,
                 device_info=DeviceInfo(),
                 supported_features=(
                     PlayerFeature.SYNC,
@@ -99,11 +99,10 @@ class SnapCastProvider(PlayerProvider):
                 ),
             )
         self.mass.players.register_or_update(player)
-        # update player state on player events
-        player.name = client.friendly_name
-        player.volume_level = client.volume
-        player.volume_muted = client.muted
-        player.available = client.connected
+        player.name = snap_client.friendly_name
+        player.volume_level = snap_client.volume
+        player.volume_muted = snap_client.muted
+        player.available = snap_client.connected
         player.can_sync_with = tuple(
             x.identifier for x in self._snapserver.clients if x.identifier != player_id
         )
@@ -140,7 +139,7 @@ class SnapCastProvider(PlayerProvider):
         """
         await self.cmd_stop(player_id)
 
-        stream = self._get_client_stream(player_id)
+        stream = self._get_snapstream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
 
         ffmpeg = (
@@ -152,8 +151,10 @@ class SnapCastProvider(PlayerProvider):
         self.mass.create_task(ffmpeg.execute())
 
         @ffmpeg.on("start")
-        def on_start(arguments: list[str]):
+        async def on_start(arguments: list[str]):
             self.logger.debug("Ffmpeg stream is running")
+            if hasattr(stream, "ffmpeg"):
+                await self.cmd_stop(player_id)
             stream.ffmpeg = ffmpeg
             player.state = PlayerState.PLAYING
             player.current_url = url
@@ -180,7 +181,7 @@ class SnapCastProvider(PlayerProvider):
         """Send STOP command to given player."""
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if player.state != PlayerState.IDLE:
-            stream = self._get_client_stream(player_id)
+            stream = self._get_snapstream(player_id)
             if hasattr(stream, "ffmpeg"):
                 try:
                     stream.ffmpeg.terminate()
@@ -200,7 +201,7 @@ class SnapCastProvider(PlayerProvider):
         self.mass.create_task(self._server.stream_remove_stream(stream_id))
 
     def _snapclient_get_group_clients_identifiers(self, player_id):
-        group = self._get_client_group(player_id)
+        group = self._get_snapgroup(player_id)
         return [ele for ele in group.clients if ele != player_id]
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
@@ -214,7 +215,7 @@ class SnapCastProvider(PlayerProvider):
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
 
-        group = self._get_client_group(target_player)
+        group = self._get_snapgroup(target_player)
         self.mass.create_task(group.add_client(player_id))
 
         self.mass.players.update(child_player.player_id)
@@ -222,31 +223,49 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
-        group = self._get_client_group(player_id)
+        group = self._get_snapgroup(player_id)
         await group.remove_client(player_id)
-        group = self._get_client_group(player_id)
-        stream = await self._snapserver.stream_add_stream(
-            f"pipe:///tmp/music-assistant/{group.identifier}?name={group.identifier}"
-        )
-        await group.set_stream(stream.get("id"))
+        group = self._get_snapgroup(player_id)
+        stream_id = await self._get_empty_stream(player_id)
+        await group.set_stream(stream_id)
+        self._handle_update()
 
-    def _get_client_group(self, player_id):
+    def _get_snapgroup(self, player_id):
         client = self._snapserver.client(player_id)
         return client.group
 
-    def _get_client_stream(self, player_id):
-        group = self._get_client_group(player_id)
+    def _get_snapstream(self, player_id):
+        group = self._get_snapgroup(player_id)
         return self._snapserver.stream(group.stream)
 
     def _synced_to(self, player_id):
         ret = None
-        group = self._get_client_group(player_id)
-        clients = list(filter(lambda x: x != player_id, group.clients))
-        if player_id == group.clients[0]:  # Player is a Sync group master
+        snap_group = self._get_snapgroup(player_id)
+        snap_clients = list(filter(lambda x: x != player_id, snap_group.clients))
+        if player_id == snap_group.clients[0]:  # Player is a Sync group master
             player = self.mass.players.get(player_id)
             player.group_childs.clear()
-            for client in clients:
-                player.group_childs.add(client)
-        elif len(clients) > 0:
-            ret = clients[0]
+            for snap_client in snap_clients:
+                player.group_childs.add(snap_client)
+        elif len(snap_clients) > 0:
+            ret = snap_clients[0]  # Return sync group master id
         return ret
+
+    async def _get_empty_stream(self, player_id):
+        snapserver = self._snapserver
+        empty_stream = None
+        for stream in snapserver.streams:
+            stream_in_group = False
+            for group in snapserver.groups:
+                if stream.identifier == group.stream:
+                    stream_in_group = True
+            if not stream_in_group:
+                empty_stream = stream.identifier
+
+        if empty_stream is None:
+            group = self._get_snapgroup(player_id)
+            empty_stream = await snapserver.stream_add_stream(
+                f"pipe:///tmp/{group.identifier}?name={group.identifier}"
+            )
+            empty_stream = empty_stream.get("id")
+        return empty_stream
